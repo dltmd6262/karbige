@@ -1,0 +1,11 @@
+[package]
+name = "karbige"
+version = "0.1.0"
+authors = ["dltmd6262 <dltmd6262@gmail.com>"]
+edition = "2018"
+publish = ["karbige"]
+
+[dependencies]
+reqwest = "0.9.22"
+serde_json = "1.0"
+chrono = "0.4.9"
