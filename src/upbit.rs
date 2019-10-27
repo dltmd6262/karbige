@@ -2,13 +2,16 @@ use crate::common::{Exchange, ExchangeName, Ticker};
 use crate::errors::FetchError;
 use crate::market::Market;
 use crate::util::parse_market_string;
+use async_trait::async_trait;
 use chrono::{DateTime, TimeZone, Utc};
+use reqwest::Client;
 
 pub struct Upbit {
     ticker_refresh_period: u64,
     all_tickers: Vec<Ticker>,
     last_fetched: DateTime<Utc>,
     name: ExchangeName,
+    http_client: Client,
 }
 
 impl Upbit {
@@ -18,11 +21,18 @@ impl Upbit {
             all_tickers: vec![],
             last_fetched: Utc.ymd(1, 1, 1).and_hms(1, 1, 1),
             name: ExchangeName::UPBIT,
+            http_client: Client::new(),
         }
     }
 
-    fn get_all_market_str(&self) -> Result<String, FetchError> {
-        let body = reqwest::get("https://api.upbit.com/v1/market/all")?.text()?;
+    async fn get_all_market_str(&self) -> Result<String, FetchError> {
+        let body = self
+            .http_client
+            .get("https://api.upbit.com/v1/market/all")
+            .send()
+            .await?
+            .text()
+            .await?;
         let parsed_body_array = match serde_json::from_str(&body)? {
             serde_json::Value::Array(a) => a,
             _ => return Ok(String::from("")),
@@ -37,13 +47,13 @@ impl Upbit {
             .join(","))
     }
 
-    fn refetch_all_tickers(&mut self) -> Result<(), FetchError> {
+    async fn refetch_all_tickers(&mut self) -> Result<(), FetchError> {
         let url = format!(
             "https://api.upbit.com/v1/ticker?markets={}",
-            self.get_all_market_str()?
+            self.get_all_market_str().await?
         );
 
-        let body = reqwest::get(&url)?.text()?;
+        let body = self.http_client.get(&url).send().await?.text().await?;
 
         let parsed_body_array = match serde_json::from_str(&body)? {
             serde_json::Value::Array(a) => a,
@@ -81,13 +91,13 @@ impl Upbit {
         Ok(())
     }
 
-    fn get_ticker(&mut self, market: Option<Market>) -> Result<Vec<Ticker>, FetchError> {
+    async fn get_ticker(&mut self, market: Option<Market>) -> Result<Vec<Ticker>, FetchError> {
         if Utc::now()
             .signed_duration_since(self.last_fetched)
             .num_milliseconds()
             > self.ticker_refresh_period as i64
         {
-            self.refetch_all_tickers()?;
+            self.refetch_all_tickers().await?;
         }
 
         match market {
@@ -105,16 +115,17 @@ impl Upbit {
     }
 }
 
+#[async_trait]
 impl Exchange for Upbit {
     fn get_name(&self) -> ExchangeName {
         self.name
     }
-    fn fetch_ticker(&mut self, market: Market) -> Result<Vec<Ticker>, FetchError> {
-        self.get_ticker(Some(market))
+    async fn fetch_ticker(&mut self, market: Market) -> Result<Vec<Ticker>, FetchError> {
+        self.get_ticker(Some(market)).await
     }
 
-    fn fetch_tickers(&mut self) -> Result<Vec<Ticker>, FetchError> {
-        self.get_ticker(None)
+    async fn fetch_tickers(&mut self) -> Result<Vec<Ticker>, FetchError> {
+        self.get_ticker(None).await
     }
 }
 
@@ -122,10 +133,10 @@ impl Exchange for Upbit {
 mod tests {
     use super::*;
 
-    #[test]
-    fn upbit_fetch_all_tickers() {
+    #[tokio::test]
+    async fn upbit_fetch_all_tickers() {
         let mut upbit = Upbit::new();
-        upbit.refetch_all_tickers().unwrap();
+        upbit.refetch_all_tickers().await.unwrap();
         let btc_pair = upbit
             .all_tickers
             .iter()

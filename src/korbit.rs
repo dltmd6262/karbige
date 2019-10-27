@@ -2,13 +2,16 @@ use crate::common::{Exchange, ExchangeName, Ticker};
 use crate::errors::FetchError;
 use crate::market::Market;
 use crate::util::parse_market_string;
+use async_trait::async_trait;
 use chrono::{DateTime, TimeZone, Utc};
+use reqwest::Client;
 
 pub struct Korbit {
     ticker_refresh_period: u64,
     all_tickers: Vec<Ticker>,
     last_fetched: DateTime<Utc>,
     name: ExchangeName,
+    http_client: Client,
 }
 
 impl Korbit {
@@ -18,16 +21,23 @@ impl Korbit {
             all_tickers: vec![],
             last_fetched: Utc.ymd(1, 1, 1).and_hms(1, 1, 1),
             name: ExchangeName::KORBIT,
+            http_client: Client::new(),
         }
     }
 
-    fn refetch_all_tickers(&mut self) -> Result<(), FetchError> {
-        let body = reqwest::get("https://api.korbit.co.kr/v1/ticker/detailed/all")?.text()?;
-
+    async fn refetch_all_tickers(&mut self) -> Result<(), FetchError> {
+        let body = self
+            .http_client
+            .get("https://api.korbit.co.kr/v1/ticker/detailed/all")
+            .send()
+            .await?
+            .text()
+            .await?;
         let parsed_body_map = match serde_json::from_str(&body)? {
             serde_json::Value::Object(map) => map,
             _ => return Ok(()),
         };
+
         let tickers = parsed_body_map
             .iter()
             .filter(|(pair, _)| match parse_market_string(pair, self.name) {
@@ -50,13 +60,13 @@ impl Korbit {
         Ok(())
     }
 
-    fn get_ticker(&mut self, market: Option<Market>) -> Result<Vec<Ticker>, FetchError> {
+    async fn get_ticker(&mut self, market: Option<Market>) -> Result<Vec<Ticker>, FetchError> {
         if Utc::now()
             .signed_duration_since(self.last_fetched)
             .num_milliseconds()
             > self.ticker_refresh_period as i64
         {
-            self.refetch_all_tickers()?;
+            self.refetch_all_tickers().await?;
         }
 
         match market {
@@ -74,17 +84,18 @@ impl Korbit {
     }
 }
 
+#[async_trait]
 impl Exchange for Korbit {
     fn get_name(&self) -> ExchangeName {
         self.name
     }
 
-    fn fetch_ticker(&mut self, market: Market) -> Result<Vec<Ticker>, FetchError> {
-        self.get_ticker(Some(market))
+    async fn fetch_ticker(&mut self, market: Market) -> Result<Vec<Ticker>, FetchError> {
+        self.get_ticker(Some(market)).await
     }
 
-    fn fetch_tickers(&mut self) -> Result<Vec<Ticker>, FetchError> {
-        self.get_ticker(None)
+    async fn fetch_tickers(&mut self) -> Result<Vec<Ticker>, FetchError> {
+        self.get_ticker(None).await
     }
 }
 
@@ -92,10 +103,10 @@ impl Exchange for Korbit {
 mod tests {
     use super::*;
 
-    #[test]
-    fn korbit_fetch_all_tickers() {
+    #[tokio::test]
+    async fn korbit_fetch_all_tickers() {
         let mut korbit = Korbit::new();
-        korbit.refetch_all_tickers().unwrap();
+        korbit.refetch_all_tickers().await.unwrap();
         let btc_pair = korbit
             .all_tickers
             .iter()

@@ -1,5 +1,6 @@
 use crate::common::{Exchange, ExchangeName, Ticker};
 use crate::market::Market;
+use std::sync::{Arc, Mutex};
 
 pub struct Comparer<'a> {
     config: ComparerConfig<'a>,
@@ -7,7 +8,7 @@ pub struct Comparer<'a> {
 
 pub struct ComparerConfig<'a> {
     percent_diff_margin: f64,
-    exchanges: Vec<&'a mut dyn Exchange>,
+    exchanges: Vec<Arc<Mutex<&'a mut dyn Exchange>>>,
 }
 
 #[derive(Clone, Debug, Copy)]
@@ -28,14 +29,16 @@ impl<'a> Comparer<'a> {
         Comparer { config: config }
     }
 
-    pub fn compare(&mut self, markets: Vec<Market>) -> Vec<Arbitrage> {
+    pub async fn compare(&mut self, markets: Vec<Market>) -> Vec<Arbitrage> {
         let mut res: Vec<Arbitrage> = vec![];
 
         for market in markets {
             let mut temp: Vec<TickerWithName> = vec![];
 
-            for ex in self.config.exchanges.iter_mut() {
-                let ex_price = ex.fetch_ticker(market).unwrap();
+            for ex_arc in self.config.exchanges.iter_mut() {
+                let ex = ex_arc.clone();
+                let mut ex = ex.lock().unwrap();
+                let ex_price = ex.fetch_ticker(market).await.unwrap();
                 temp.push(TickerWithName {
                     ticker: ex_price[0],
                     name: ex.get_name(),
@@ -79,17 +82,22 @@ mod tests {
     use crate::korbit::Korbit;
     use crate::upbit::Upbit;
 
-    #[test]
-    fn compare_btc() {
-        let mut upbit = Upbit::new();
-        let mut korbit = Korbit::new();
+    #[tokio::test]
+    async fn compare_btc() {
+        let mut upbit_temp = Upbit::new();
+        let mut korbit_temp = Korbit::new();
+
+        let upbit: Arc<Mutex<&mut dyn Exchange>> = Arc::new(Mutex::new(&mut upbit_temp));
+        let korbit: Arc<Mutex<&mut dyn Exchange>> = Arc::new(Mutex::new(&mut korbit_temp));
+
+        let exchanges: Vec<Arc<Mutex<&mut dyn Exchange>>> = vec![upbit, korbit];
 
         let mut comparer = Comparer::new(ComparerConfig {
             percent_diff_margin: 0.00000001,
-            exchanges: vec![&mut upbit, &mut korbit],
+            exchanges: exchanges,
         });
 
-        let res = comparer.compare(vec![Market::KrwBtc]);
+        let res = comparer.compare(vec![Market::KrwBtc]).await;
 
         assert!(res.len() != 0);
     }
